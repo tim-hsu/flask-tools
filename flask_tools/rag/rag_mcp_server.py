@@ -8,12 +8,9 @@
 import json
 import click
 from enum import StrEnum
-import uvicorn
 
 import datasets
-from datasets import load_dataset
 from loguru import logger
-import itertools
 
 datasets.disable_caching()
 
@@ -21,8 +18,6 @@ try:
     from transformers import (
         AutoTokenizer,
         AutoModelForCausalLM,
-        LlamaForCausalLM,
-        PreTrainedTokenizer,
     )
     import torch
     from trl import apply_chat_template
@@ -37,7 +32,6 @@ except (ImportError, ModuleNotFoundError) as e:
 
 from flask_tools.rag import SmilesEmbedder, FaissDataRetriever
 from flask_tools.rag.rag_tokenizers import ChemformerTokenizer
-from flask_tools.rag.prompts import ReactionDataPrompt
 from flask_tools.retrosynthesis.flaskv2_reactions import (
     format_rxn_prompt,
     PRODUCT_KEYS,
@@ -54,9 +48,8 @@ logger.setLevel(logging.DEBUG)
 
 
 from fastmcp import FastMCP
-from starlette.responses import JSONResponse
 
-mcp = FastMCP("RAG Server")
+mcp = FastMCP("RAG")
 
 
 class Role(StrEnum):
@@ -64,95 +57,32 @@ class Role(StrEnum):
     REACTANTS = "reactants"
 
 
-def convert_dictoflists_to_listofdicts(dofl_dict: dict) -> dict:
-    """Convert a dictionary of lists to a list of dicts.
-    Args:
-        dofl_dict (dict): Dictionary of lists. Each value should be the same length.
-    Returns:
-        list[dict]: List of dicts. Each dict represents a reaction.
-    """
-    return [dict(zip(dofl_dict.keys(), row)) for row in zip(*dofl_dict.values())]
-
-
 @mcp.tool()
-def search_similar_reactions(data: dict, forward: bool, k_r: int) -> dict:
-    """Add similar reactions to a reaction data dictionary.
+def retrieve_similar_reactions(query_smiles: list[str], forward: bool, k: int) -> list[dict]:
+    """Retrieve similar reactions.
 
-    This function retrieves similar reactions from a reaction database and
-    populates the following fields within ``data``:
-    - ``data['similar']``: A list of list of dictionaries. The inner lists are of length
-      `k_r`, and each dictionary is of a retrieved similar reaction.
+    Given a list of query molecules, this function retrieves reactions 
+    with similar molecules from some chemical reaction database.
 
     Args:
-        data (dict): data dictionary that will be augmented.
-            Adds the `similar` key:
-                similar (list[dict]): List populated with `k_r` retrieved similar
-                    reactions.
-            Additional keys may also be present but are not required or modified.
-        forward (bool): Whether prediction is for forward synthesis
-            (True) or retrosynthesis (False).
-        k_r (int): Number of similar reactions to retrieve.
-
+        query_smiles (list[str]): list of SMILES strings that the similarity metric is based on.
+        forward (bool): context of using this function. True for Forward synthesis, False for Retrosynthesis.
+        k (int): number of samples to retrieve, i.e., top-k similar reactions.
+    
     Returns:
-        dict: The updated reaction data dictionary with new fields populated.
+        A list of similar reactions, each in dictionary/json format.
     """
-    return search_similar_reactions_impl(data, forward, k_r)
-
-
-def search_similar_reactions_impl(data: dict, forward: bool, k_r: int) -> dict:
-    """Add similar reactions to the reaction data dictionary.
-    See search_similar_reactions for details
-    """
-    input_role = Role.REACTANTS if forward else Role.PRODUCTS
-    return search_similar_reactions_by_role(data, input_role, k_r)
-
-
-def search_similar_reactions_by_role(data: dict, role: str, k_r: int) -> dict:
-    """Add similar reactions to a reaction data dictionary.
-
-    This function retrieves similar reactions from a reaction database and
-    populates the following fields within ``data``:
-    - ``data['similar']``: A list of length `k_r` of dictionaries. Each dictionary is of a retrieved similar reaction.
-
-    Args:
-        data (dict): data dictionary that will be augmented.
-            Example: (for forward synthesis) {'reactants': ['CCC']}
-            Adds the `similar` key:
-                similar (list[dict]): List populated with `k_r` retrieved similar
-                    reactions.
-            Additional keys may also be present but are not required or modified.
-        role (str): The role to search similar reactions for. Must be one of 'reactants' or 'products'.
-        k_r (int): Number of similar reactions to retrieve.
-
-    Returns:
-        dict: The updated reaction data dictionary with new fields populated.
-    """
-    input_role = role
-    logger.debug(f"search_similar_reactions_by_role: data is {data}")
-    assert isinstance(data[input_role], list), f"data[{input_role}] must be a list"
-    assert not isinstance(
-        data[input_role][0], list
-    ), f"data[{input_role}] must not be a list of lists. This function is for a single reaction"
-    data = search_similar_reactions_by_role_bulk([data], role, k_r)[0]
-    return data
-
-
-def search_similar_reactions_by_role_bulk(
-    data: list[dict], role: str, k_r: int
-) -> list[dict]:
-    """See search_similar_reactions_by_role. data is a list of the dicts matching that function's data"""
-    retriever = retro_retriever if role == Role.PRODUCTS else forward_retriever
-    assert role in [
-        Role.REACTANTS,
-        Role.PRODUCTS,
-    ], f"role must be one of 'reactants' or 'products', but got {role}"
-    input_role = role
-    query_smiles = [".".join(d[input_role]) for d in data]
+    retriever = forward_retriever if forward else retro_retriever
+    embedder = forward_embedder if forward else retro_embedder
     query_emb = embedder.embed_smiles(query_smiles)
-    similar_dist, similar_idx, similar = retriever.search_similar(query_emb, k=k_r)
-    for d, sim in zip(data, similar):
-        d["similar"] = sim
-    return data
+    similar_dist, similar_idx, similar = retriever.search_similar(query_emb, k=k)
+    similar = similar[0] # list[list[Any]] -> list[Any]
+    # Clean up the returned reactions
+    similar_ = [
+        {k: v for k, v in rxn.items() if v not in ([], '', [''], None) and k != 'id'}
+        for rxn in similar
+    ]
+    return similar_
 
 
 def predict_reaction_internal(
@@ -294,50 +224,52 @@ def add_expert_predictions_on_similar_data(data: dict) -> dict:
     return data
 
 
-@mcp.tool()
-def get_related_reaction_info(data: dict, forward=True, k_r: int = 3) -> dict:
-    """
-    Augment a single reaction data dictionary with additional information.
-    This function will add an expert prediction and similar reactions with their expert predictions to the
-    data dictionary. This function calls `search_similar_reactions` and `add_expert_predictions_on_similar_data`.
-    Args:
-        data (dict): reaction data dictionary.
-          Example: (for forward synthesis) {'reactants': ['CCC'], }
-          Example: (for retrosynthesis) {'products': ['CCC'], }
-        forward (bool): Whether the prediction is for forward synthesis (True) or retrosynthesis (False). Defaults to True.
-        k_r (int): Number of similar reactions to retrieve. Defaults to 3.
+# TODO: revise implementation (actually, is it needed?)
+# @mcp.tool()
+# def get_related_reaction_info(data: dict, forward=True, k_r: int = 3) -> dict:
+#     """
+#     Augment a single reaction data dictionary with additional information.
+#     This function will add an expert prediction and similar reactions with their expert predictions to the
+#     data dictionary. This function calls `search_similar_reactions` and `add_expert_predictions_on_similar_data`.
+#     Args:
+#         data (dict): reaction data dictionary.
+#           Example: (for forward synthesis) {'reactants': ['CCC'], }
+#           Example: (for retrosynthesis) {'products': ['CCC'], }
+#         forward (bool): Whether the prediction is for forward synthesis (True) or retrosynthesis (False). Defaults to True.
+#         k_r (int): Number of similar reactions to retrieve. Defaults to 3.
 
-    Returns:
-        dict: The updated reaction data dictionary with additional fields.
-            Adds these fields:
-            "expert_prediction" (str): Expert prediction for the reaction.
-            "similar" (list[dict]): List populated with retrieved similar reactions, and their expert predictions
-    """
-    logger.debug(f"data is {data}, forward is {forward}")
+#     Returns:
+#         dict: The updated reaction data dictionary with additional fields.
+#             Adds these fields:
+#             "expert_prediction" (str): Expert prediction for the reaction.
+#             "similar" (list[dict]): List populated with retrieved similar reactions, and their expert predictions
+#     """
+#     logger.debug(f"data is {data}, forward is {forward}")
 
-    # Just in case: Remove extra fields to doubly make sure there's no data leakage
-    to_delete = PRODUCT_KEYS if forward else REAGENT_KEYS
-    for key in to_delete:
-        if key in data:
-            del data[key]
+#     # Just in case: Remove extra fields to doubly make sure there's no data leakage
+#     to_delete = PRODUCT_KEYS if forward else REAGENT_KEYS
+#     for key in to_delete:
+#         if key in data:
+#             del data[key]
 
-    search_similar_reactions_impl(data, forward=forward, k_r=k_r)
-    add_expert_predictions_on_similar_data(data)
+#     search_similar_reactions_impl(data, forward=forward, k_r=k_r)
+#     add_expert_predictions_on_similar_data(data)
 
-    data["expert_prediction"] = predict_reaction_internal(
-        molecules=data, forward=forward, k_r=1
-    )[0]
-    sim_expert_preds = data["expert predictions on similar data"]
-    assert len(sim_expert_preds) == len(
-        data["similar"]
-    ), f"Expected {len(data['similar'])} expert predictions, but got {len(sim_expert_preds)}"
-    for i, sim_pred in enumerate(sim_expert_preds):
-        data["similar"][i]["expert_prediction"] = sim_pred
-    del data["expert predictions on similar data"]
-    return data
+#     data["expert_prediction"] = predict_reaction_internal(
+#         molecules=data, forward=forward, k_r=1
+#     )[0]
+#     sim_expert_preds = data["expert predictions on similar data"]
+#     assert len(sim_expert_preds) == len(
+#         data["similar"]
+#     ), f"Expected {len(data['similar'])} expert predictions, but got {len(sim_expert_preds)}"
+#     for i, sim_pred in enumerate(sim_expert_preds):
+#         data["similar"][i]["expert_prediction"] = sim_pred
+#     del data["expert predictions on similar data"]
+#     return data
 
 
-embedder: SmilesEmbedder = None
+forward_embedder: SmilesEmbedder = None
+retro_embedder: SmilesEmbedder = None
 forward_retriever: FaissDataRetriever = None
 retro_retriever: FaissDataRetriever = None
 forward_expert_model = None
@@ -348,14 +280,14 @@ tokenizer = None
 @click.command()
 @click.option(
     "--transport",
-    type=click.Choice(["stdio", "streamable-http"]),
+    type=click.Choice(["stdio", "streamable-http", "sse"]),
     help="MCP transport type",
     default="streamable-http",
 )
 @click.option("--port", type=int, default=8127, help="Port to run the server on")
 @click.option("--host", type=str, default=None, help="Host to run the server on")
 @click.option(
-    "--name", type=str, default="flask_rag_v1_tools", help="Name of the MCP server"
+    "--name", type=str, default="flask_rag_tools", help="Name of the MCP server"
 )
 @click.option(
     "--copilot-port", type=int, default=8001, help="Port to the running copilot backend"
@@ -370,8 +302,14 @@ tokenizer = None
     help="Path to database file (JSON) for similarity search",
 )
 @click.option(
-    "--embedder-path",
-    envvar="FLASK_RAG_EMBEDDER_PATH",
+    "--forward-embedder-path",
+    envvar="FLASK_RAG_FORWARD_EMBEDDER_PATH",
+    type=str,
+    help="Path to embedding model",
+)
+@click.option(
+    "--retro-embedder-path",
+    envvar="FLASK_RAG_RETRO_EMBEDDER_PATH",
     type=str,
     help="Path to embedding model",
 )
@@ -394,18 +332,6 @@ tokenizer = None
     help="Path to embedding file (NPY) corresponding to similarity search",
 )
 @click.option(
-    "--all-mols-database-path",
-    envvar="FLASK_RAG_ALL_MOLS_DATABASE_PATH",
-    type=str,
-    help="Path to database file (txt) of one SMILES per line for similarity search",
-)
-@click.option(
-    "--all-mols-embedding-path",
-    envvar="FLASK_RAG_ALL_MOLS_EMBEDDING_PATH",
-    type=str,
-    help="Path to embedding file (NPY) corresponding to similarity search",
-)
-@click.option(
     "--forward-expert-model-path",
     envvar="FLASK_RAG_FORWARD_EXPERT_MODEL_PATH",
     type=str,
@@ -417,13 +343,6 @@ tokenizer = None
     type=str,
     help="Path to retro expert model",
 )
-# @click.option('--k_e', type=int, help='Number of expert predictions (per input data) to show in prompt')
-@click.option(
-    "--k_r",
-    type=int,
-    help="Number of similar reactions (per input data) to retrieve",
-    default=3,
-)
 @click.pass_context
 def main(
     ctx,
@@ -434,22 +353,26 @@ def main(
     copilot_port: int,
     copilot_host: int,
     database_path: str,
-    embedder_path: str,
+    forward_embedder_path: str,
+    retro_embedder_path: str,
     embedder_vocab_path: str,
     forward_embedding_path: str,
     retro_embedding_path: str,
-    all_mols_database_path: str,
-    all_mols_embedding_path: str,
     forward_expert_model_path: str,
     retro_expert_model_path: str,
-    k_r: int,
 ):
-    global embedder, forward_retriever, retro_retriever, forward_expert_model, retro_expert_model, tokenizer
+    global forward_embedder, retro_embedder, forward_retriever, retro_retriever, forward_expert_model, retro_expert_model, tokenizer
     print("\n".join(f"{k} = {v}" for k, v in ctx.params.items()))
 
     # Init RAG components
-    embedder = SmilesEmbedder(
-        model_path=embedder_path,
+    forward_embedder = SmilesEmbedder(
+        model_path=forward_embedder_path,
+        tokenizer=ChemformerTokenizer(
+            vocab_path=embedder_vocab_path,
+        ),
+    )
+    retro_embedder = SmilesEmbedder(
+        model_path=retro_embedder_path,
         tokenizer=ChemformerTokenizer(
             vocab_path=embedder_vocab_path,
         ),
@@ -462,28 +385,22 @@ def main(
         data_path=database_path,
         emb_path=retro_embedding_path,
     )
-    # retriever = forward_retriever if forward else retro_retriever
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        forward_expert_model_path or retro_expert_model_path,
-        padding_side="left",
-    )
-    tokenizer.add_special_tokens({"pad_token": "<|finetune_right_pad_id|>"})
+    # Init tokenizer for expert model (FLASKv2) inference, if needed
+    if forward_expert_model_path or retro_expert_model_path:
+        tokenizer = AutoTokenizer.from_pretrained(
+            forward_expert_model_path or retro_expert_model_path,
+            padding_side="left",
+        )
+        tokenizer.add_special_tokens({"pad_token": "<|finetune_right_pad_id|>"})
+
+    # Init FLASKv2 forward model, if needed
     if forward_expert_model_path is not None:
         forward_expert_model = AutoModelForCausalLM.from_pretrained(
             forward_expert_model_path,
             device_map="cuda",
             torch_dtype=torch.bfloat16,
         )
-    if retro_expert_model_path is not None:
-        retro_expert_model = AutoModelForCausalLM.from_pretrained(
-            retro_expert_model_path,
-            device_map="cuda",
-            torch_dtype=torch.bfloat16,
-        )
-
-    if forward_expert_model is not None:
-
         @mcp.tool()
         def get_expert_forward_synthesis_predictions(reactants: list[str]) -> list[str]:
             """
@@ -494,7 +411,7 @@ def main(
                     one reaction.
                     Example: ['CCO(=O)', 'CCO'], which is acetic acid and ethanol which produces ethyl acetate.
             Returns:
-                list[str]: A list of product predictions, each of which is  json string listing the predicted product molecule(s) in SMILES.
+                list[str]: A list of product predictions, each of which is a json string listing the predicted product molecule(s) in SMILES.
             """
             logger.debug("Calling `predict_reaction_products`")
             logger.debug(f"Input reactions: {reactants}")
@@ -502,8 +419,13 @@ def main(
             logger.debug(f"Output predictions: {res}")
             return res
 
-    if retro_expert_model is not None:
-
+    # Init FLASKv2 retro model, if needed
+    if retro_expert_model_path is not None:
+        retro_expert_model = AutoModelForCausalLM.from_pretrained(
+            retro_expert_model_path,
+            device_map="cuda",
+            torch_dtype=torch.bfloat16,
+        )
         @mcp.tool()
         def get_expert_retro_synthesis_predictions(products: list[str]) -> list[str]:
             """
@@ -533,7 +455,7 @@ def main(
         transport=transport,
         host=host,
         port=port,
-        path=f"/flask_rag_v1_tools/mcp",
+        path="/flask_rag_tools/mcp",
         json_response=True,
     )
 

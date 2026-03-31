@@ -1,83 +1,45 @@
-## A RAG SSE Server with ChARGe
+## RAG MCP server
 
-This RAG MCP server has functions to retrieve similar reactions, and expert predictions for forward or retrosynthesis.
+This MCP server provides tools for retrieval-augmented generation (RAG).
 
-In retrosynthesis, the user will input a dictionary like
+Tools currently available:
+- `retrieve_similar_reactions(query_smiles: list[str], forward: bool, k: int) -> list[dict]`
+- `get_expert_forward_synthesis_predictions(reactants: list[str]) -> list[str]` (only if you provide forward expert model path)
+- `get_expert_retro_synthesis_predictions(products: list[str]) -> list[str]` (only if you provide retro expert model path)
 
-`{"products": ["CC(=O)c1ccc2c(ccn2C(=O)OC(C)(C)C)c1"]}`
 
+## How to use
 
-and may retrieve information like:
-
-```
-{
-  "products": [
-     "CC(=O)c1ccc2c(ccn2C(=O)OC(C)(C)C)c1"
-   ],
-  "similar": [
-    {
-      "reactants": [
-        "CC(C)(C)OC(=O)n1ccc2cc(CO)ccc21"
-      ],
-      "products": [
-        "CC(C)(C)OC(=O)n1ccc2cc(C=O)ccc21"
-      ],
-      "expert_prediction": "{\"products\": [\"CC(C)(C)OC(=O)n1ccc2cc(C=O)ccc21\"]}"
-    },
-    {
-      "reactants": [
-        "CC(C)(C)OC(=O)OC(=O)OC(C)(C)C",
-        "COC(=O)c1ccc2[nH]ccc2c1"
-      ],
-      "products": [
-        "COC(=O)c1ccc2c(ccn2C(=O)OC(C)(C)C)c1"
-      ],
-      "expert_prediction": "{\"products\": [\"COC(=O)c1ccc2c(ccn2C(=O)OC(C)(C)C)c1\"]}"
-    },
-    {
-      "reactants": [
-        "CC(C)(C)OC(=O)OC(=O)OC(C)(C)C",
-        "COC(=O)c1ccc2cc[nH]c2c1"
-      ],
-      "products": [
-        "COC(=O)c1ccc2ccn(C(=O)OC(C)(C)C)c2c1"
-      ],
-      "expert_prediction": "{\"products\": [\"COC(=O)c1ccc2ccn(C(=O)OC(C)(C)C)c2c1\"]}"
-    }
-  ],
-  "expert_prediction": "{\"reactants\": [\"CC(=O)c1ccc2[nH]ccc2c1\", \"CC(C)(C)OC(=O)OC(=O)OC(C)(C)C\"], \"agents\": [\"CN(C)c1ccncc1\"], \"solvents\": [\"CC#N\"]}"
-}
-
-```
-
-### Setup
-
-You must first run the server on a different process. You can do this by running the following command in a terminal:
+Start the server on a different process. For example:
 
 ```bash
 python "../../charge/rag/rag_mcp_server.py" \
     --database-path  <path-to-jsonl-file>  \
-    --embedder-path <path-to-embedder-torchscript-file> \
+    --forward-embedder-path <path-to-forward-embedder-torchscript-file> \
+    --retro-embedder-path <path-to-retro-embedder-torchscript-file> \
     --embedder-vocab-path <path-to-emebedder-vocab-json>  \
     --forward-embedding-path <path-to-RAG-embedding-database-for-reagents> \
     --retro-embedding-path   <path-to-RAG-embedding-database-for-products> \
     --forward-expert-model-path <path-to-HF-expert-forward-model-checkpoint> \
-    --retro-expert-model-path <path-to-HF-expert-forward-model-checkpoint> \
+    --retro-expert-model-path <path-to-HF-expert-forward-model-checkpoint>
 ```
 
-This will start an SSE MCP server locally. Note the address and port where the server is running (by default, it will be `http://127.0.0.1:8000`).
+This will start an MCP server (with streamable-http transport by default). Note that `--forward-expert-model-path` and `--retro-expert-model-path` are optional arguments.
 
-
-### Client Usage
-You can then use the ChARGe client to connect to this server and perform operations.
-Run the following script to see how to use the client with the RAG server. This performs retrosynthesis on the specified molecule.
-
+You can then connect to the server from the client side. For example:
 ```bash
-python main.py --backend <backend> --model <model> --server-url <server_url>/sse --retrosynthesis --lead-molecules "CC(=O)c1ccc2c(ccn2C(=O)OC(C)(C)C)c1"
-
+python main.py \
+  --backend <backend> \
+  --model <model> \
+  --server-url <server_url> \
+  --lead-molecules "CC(=O)c1ccc2c(ccn2C(=O)OC(C)(C)C)c1" \
+  --retrosynthesis
 ```
 
-**Note:** The `--server-url` should point to the address where your SSE MCP server is running, appended with `/sse`.
+The `--retrosynthesis` flag is only needed when the context is retrosynthesis, otherwise (forward synthesis), simply remove it.
+
+
+## Misc.
 
 To use the `vllm` backend, set the following environment variables before running:
 
