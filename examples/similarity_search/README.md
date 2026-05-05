@@ -1,11 +1,9 @@
-## RAG MCP server
+## Similarity search MCP server
 
-This MCP server provides tools for retrieval-augmented generation (RAG).
+This MCP server provides base tool(s) for searching similar data from some database.
 
 Tools currently available:
-- `retrieve_similar_reactions(query_smiles: list[str], forward: bool, k: int) -> list[dict]`
-- `get_expert_forward_synthesis_predictions(reactants: list[str]) -> list[str]` (only if you provide forward expert model path)
-- `get_expert_retro_synthesis_predictions(products: list[str]) -> list[str]` (only if you provide retro expert model path)
+- `retrieve_similar_reactions(smiles: str, forward: bool, k: int) -> list[dict]`
 
 
 ## How to use
@@ -13,18 +11,16 @@ Tools currently available:
 Start the server on a different process. For example:
 
 ```bash
-python "../../charge/rag/rag_mcp_server.py" \
+python "../../charge/similarity_search/mcp_server.py" \
     --database-path  <path-to-jsonl-file>  \
     --forward-embedder-path <path-to-forward-embedder-torchscript-file> \
     --retro-embedder-path <path-to-retro-embedder-torchscript-file> \
     --embedder-vocab-path <path-to-emebedder-vocab-json>  \
     --forward-embedding-path <path-to-RAG-embedding-database-for-reagents> \
-    --retro-embedding-path   <path-to-RAG-embedding-database-for-products> \
-    --forward-expert-model-path <path-to-HF-expert-forward-model-checkpoint> \
-    --retro-expert-model-path <path-to-HF-expert-forward-model-checkpoint>
+    --retro-embedding-path   <path-to-RAG-embedding-database-for-products>
 ```
 
-This will start an MCP server (with streamable-http transport by default). Note that `--forward-expert-model-path` and `--retro-expert-model-path` are optional arguments.
+This will start an MCP server (with streamable-http transport by default).
 
 You can then connect to the server from the client side. For example:
 ```bash
