@@ -21,8 +21,6 @@ class RetrosynthesisTask(Task):
         )
         super().__init__(system_prompt=system_prompt, user_prompt=user_prompt, **kwargs)
         self.lead_molecules = lead_molecules
-        self.system_prompt = system_prompt
-        self.user_prompt = user_prompt
 
 
 class ForwardSynthesisTask(Task):
@@ -39,8 +37,6 @@ class ForwardSynthesisTask(Task):
         )
         super().__init__(system_prompt=system_prompt, user_prompt=user_prompt, **kwargs)
         self.lead_molecules = lead_molecules
-        self.system_prompt = system_prompt
-        self.user_prompt = user_prompt
         print("=" * 100)
         print("user prompt is", user_prompt)
 

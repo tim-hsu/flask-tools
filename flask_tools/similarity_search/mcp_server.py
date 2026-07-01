@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 from fastmcp import FastMCP
-mcp = FastMCP("RAG")
+mcp = FastMCP("Similarity search")
 
 
 @mcp.tool()

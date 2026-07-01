@@ -8,47 +8,59 @@
 import json
 import faiss
 import numpy as np
-from numpy import ndarray
-from typing import Any
+from numpy.typing import NDArray
+from typing import Any, Self
 
 
 class FaissDataRetriever:
-    def __init__(
-        self, data_path: str, emb_path: str, data_format: str = "json"
-    ) -> None:
+    def __init__(self, data: list[Any], embeddings: NDArray) -> None:
         """
         Args:
-            data_path (str): path to data file for retrieval. Must be iterable (e.g., a list)
-            emb_path (str): path to npy file containing the embedding vectors for 'data_path'
-            data_format (str): data file format for 'data_path' (default: 'json')
+            data (list[Any]): a list of data samples to be retrieved from.
+            embeddings (NDArray): embedding vectors corresponding to `data`.
+                Must have shape `[B, d]`, where `B` is the number of data samples in database.
         """
-        self.data_path = data_path
-        self.emb_path = emb_path
-        self.data_format = data_format
+        assert len(data) == len(embeddings)
+        assert embeddings.ndim == 2
+        dim = embeddings.shape[1]
+        self.faiss_index = faiss.IndexFlat(dim)
+        self.faiss_index.add(embeddings)
+        self.data = data
 
-        # Load the data file into an iterable
+    @classmethod
+    def from_files(cls, data_path: str, emb_path: str, data_format: str = "json") -> Self:
+        """
+        Args:
+            data_path (str): path to data file for retrieval. Data must be indexable, e.g., a list.
+            emb_path (str): path to npy file containing the embedding vectors for 'data_path'.
+            data_format (str): data file format for 'data_path'. Default is json.
+        """
+        # Load data file
         match data_format:
             case "json":
-                self.data = self._load_json(data_path)
+                with open(data_path) as f:
+                    data = [json.loads(line) for line in f]
             case _:
                 raise NotImplementedError
 
-        # Load the embedding file and set up the FAISS index
+        # Load embeddings
         emb = np.load(emb_path)
-        dim = emb.shape[1]
-        # self.faiss_index = faiss.IndexHNSWFlat(dim, 32)
-        self.faiss_index = faiss.IndexFlat(dim)
-        # self.faiss_index.metric_type = faiss.METRIC_Jaccard
-        self.faiss_index.add(emb)
 
-    def _load_json(self, filename: str) -> list[dict]:
-        with open(filename, "r") as f:
-            data = [json.loads(line) for line in f]
-        return data
+        return cls(data, emb)
 
-    def search_similar(
-        self, query: ndarray, k: int
-    ) -> tuple[list[list[float]], list[list[int]], list[list[Any]]]:
+    def search_similar(self, query: NDArray, k: int) -> tuple[list[list[float]], list[list[int]], list[list[Any]]]:
+        """
+        Args:
+            query (NDArray): query embedding vectors. Must have shape `[N, d]`.
+            k (int): number of similar data samples to retrieve, as in top-k search.
+
+        Returns:
+            distances (NDArray[np.float]): embedding distances of retrieved data samples to the query vectors.
+            indices (NDArray[np.int]): indices of retrieved data samples.
+            similar_data (list[list[Any]]): retrieved data samples.
+        """
+        assert query.ndim == 2
+
         D, I = self.faiss_index.search(query, k)
         similar = []
         for row in I:

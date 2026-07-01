@@ -11,7 +11,7 @@ Tools currently available:
 Start the server on a different process. For example:
 
 ```bash
-python "../../charge/similarity_search/mcp_server.py" \
+python "../../flask-tools/similarity_search/mcp_server.py" \
     --database-path  <path-to-jsonl-file>  \
     --forward-embedder-path <path-to-forward-embedder-torchscript-file> \
     --retro-embedder-path <path-to-retro-embedder-torchscript-file> \
